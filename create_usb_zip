@@ -1,0 +1,168 @@
+#!/bin/sh
+#
+# ------------------------------------------------------------------
+#  create_usb_zip
+# 
+#  Copyright (c) 2013-2018 by Cisco Systems, Inc.
+#  All rights reserved.
+# ------------------------------------------------------------------
+
+set -e
+
+#$1 --> platform type
+#$2 --> path to iso image
+
+MCOPY_ERR=0
+function recursive_mcopy()
+{
+    SOURCE=$1
+    DEST_IMG=$2 
+    for file in "$SOURCE"/*
+    do 
+        if [ -d "${file}" ]; then
+            mcopy -i $DEST_IMG ${file} ::${file//$STG_DIR/} > /dev/null 2>&1
+            if [ $? -ne 0 ]; then
+                MCOPY_ERR=1;
+            else 
+                recursive_mcopy "${file}" $DEST_IMG
+            fi        
+        fi 
+    done   
+}
+
+if [ -z "$2" ]; then
+    echo "Usage:   ./linux/misc/scripts/create_usb_zip <plat> <image_file_path>"
+    echo "Example 1: ./linux/misc/scripts/create_usb_zip ncs6k img_ncs6k/ncs6k-full-x.iso" 
+    echo "Example 2: For GISO" 
+    echo "        ./linux/misc/scripts/create_usb_zip ncs5500 ncs5500-goldenk9-x.iso giso" 
+    echo "Supported Platform: ncs1k, ncs4k, ncs5k, ncs6k, ncs5500, ncs540, ncs1004, ncs1001"
+    exit; 
+fi
+
+if [ -e $2 ]; then
+
+  STG_DIR=$(mktemp -d /tmp/usb_boot.XXXXXXXXXX)
+  EFI_DIR=$STG_DIR/EFI/boot
+  IMG_DIR=$STG_DIR/boot
+  ISO_FILE=$(cd $(dirname $2); pwd)/$(basename $2)
+  PLAT=$1
+  ZIP_FILE=$PLAT-usb_boot.zip
+
+  if [ $PLAT == "ncs1k" ]; then
+    EFI_DIR=$STG_DIR/EFI/Cisco
+  fi 
+  
+  if [ $PLAT == "ncs1001" ]; then
+    EFI_DIR=$STG_DIR/EFI/Cisco
+  fi
+  
+  if [ $PLAT == "ncs1004" ]; then
+    EFI_DIR=$STG_DIR/EFI/Cisco
+  fi 
+
+  if [ $PLAT == "ncs5k" ]; then
+    EFI_DIR=$STG_DIR/EFI/Cisco
+  fi 
+
+   # Create staging directory structure
+   mkdir -p $EFI_DIR
+   mkdir -p $IMG_DIR
+
+   # Add necessary files to the staging directory
+   cur_dir=$PWD 
+   pushd $STG_DIR > /dev/null  
+   # Soft link iso image
+   ln -s $ISO_FILE $IMG_DIR/install-image.iso
+   
+   #Use iso-read to get the grub files
+   iso-read -i $IMG_DIR/install-image.iso -e boot/grub2/grub-usb.cfg -o $EFI_DIR/grub.cfg
+   iso-read -i $IMG_DIR/install-image.iso -e boot/grub2/bootx64.efi -o $EFI_DIR/bootx64.efi
+   if [ $PLAT == "ncs1k" ]; then
+      iso-read -i $IMG_DIR/install-image.iso -e boot/grub2/bootx64.efi -o $EFI_DIR/grub.efi
+   fi
+   if [ $PLAT == "ncs1001" ]; then
+      iso-read -i $IMG_DIR/install-image.iso -e boot/grub2/bootx64.efi -o $EFI_DIR/grub.efi
+   fi
+   if [ $PLAT == "ncs1004" ]; then
+      iso-read -i $IMG_DIR/install-image.iso -e boot/grub2/bootx64.efi -o $EFI_DIR/grub.efi
+   fi
+   if [ $PLAT == "ncs5k" ]; then
+      iso-read -i $IMG_DIR/install-image.iso -e boot/grub2/bootx64.efi -o $EFI_DIR/grub.efi
+   fi
+ 
+   # If grub.cfg doesn't point to image inside /boot, change it to do that
+   grep -q "/boot/install-image.iso" $EFI_DIR/grub.cfg || \
+      sed -i -e "s;install-image.iso;boot/install-image.iso;" $EFI_DIR/grub.cfg
+   sed -i '/install-image.iso/a\\tset root=(loop)' $EFI_DIR/grub.cfg
+   if [ $PLAT == "ncs5k" ]; then
+         sed -i -e "s;--speed=9600; ;" $EFI_DIR/grub.cfg
+         sed -i -e "s;,9600; ;" $EFI_DIR/grub.cfg
+   fi
+   if [ $PLAT == "ncs5500" ] || [ $PLAT == "ncs540" ]; then
+       sed -i -e "s;--speed=9600;--speed=auto;" $EFI_DIR/grub.cfg
+       sed -i -e "s;console=ttyS0,9600;console=auto;" $EFI_DIR/grub.cfg
+       sed -i -e "s;giso_boot;giso_boot boot_mode=4;" $EFI_DIR/grub.cfg
+   fi
+   if [ $PLAT == "ncs1k" ]; then
+	sed -i -e "s;aer=off; aer=off intel_idle.max_cstate=0;" $EFI_DIR/grub.cfg	
+    sed -i -e "s;giso_boot;giso_boot boot_mode=4;" $EFI_DIR/grub.cfg
+   fi
+   if [ $PLAT == "ncs1001" ]; then
+	sed -i -e "s;aer=off; aer=off intel_idle.max_cstate=0;" $EFI_DIR/grub.cfg	
+   fi
+   # Create zip file
+   /usr/bin/zip -r $cur_dir/$ZIP_FILE *
+   
+   # Indicate zip file name
+   echo "Zip file created - $ZIP_FILE"
+
+   # Create usb zip file for ECP on ncs6k. as it uses a different efi and grub.cfg
+   if [ $PLAT == "ncs6k" ]; then
+       ZIP_FILE=$PLAT-usb_boot-ECP.zip
+       iso-read -i $IMG_DIR/install-image.iso -e boot/grub2/grub-cc.efi -o $EFI_DIR/bootx64.efi
+       sed -i -e "s;pci=assign-busses;bootmedia=usb;" $EFI_DIR/grub.cfg
+       sed -i -e "s;aer=off; ;" $EFI_DIR/grub.cfg
+       sed -i -e "s;console=ttyS0;console=tty0 console=ttyS0;" $EFI_DIR/grub.cfg
+
+       # Create zip file
+       /usr/bin/zip -r $cur_dir/$ZIP_FILE *
+
+       # Indicate zip file name
+       echo "Zip file created - $ZIP_FILE"
+
+       #Create Virtual Media bootable image for ECP
+       set +e
+       command -v mcopy > /dev/null 2>&1
+       if [ $? -eq 0 ]; then
+           echo "Creating ECP Virtual media boot image"
+           IMG_NAME=$cur_dir/$PLAT-vm_boot-ECP.img
+           
+           iso_size=$(du -sB 4M $ISO_FILE | awk '{printf "%d", $1}')
+           zip_size=$(du -sB 4M $STG_DIR | awk '{printf "%d", $1}')
+
+           let image_size=$iso_size+$zip_size+1
+
+           dd if=/dev/zero of=$IMG_NAME bs=4M count=$image_size > /dev/null 2>&1
+                                                                                                        
+           mkfs.vfat -F 32 $IMG_NAME > /dev/null 2>&1
+
+           recursive_mcopy $STG_DIR $IMG_NAME
+           if [ $MCOPY_ERR -eq 1 ]; then
+               echo "Failed to create VM boot image"
+               rm $IMG_NAME
+           else
+               echo "Created $IMG_NAME"
+           fi
+       else
+           echo "Missing mcopy binaries. Skipping ECP VM boot image creation."
+       fi
+   fi    
+
+   popd > /dev/null
+
+   # Clean out tmp directory
+   rm -rf $STG_DIR
+
+else 
+   echo "$2 - File not present. Please provide a valid path"
+fi
